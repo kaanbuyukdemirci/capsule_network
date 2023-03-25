@@ -4,126 +4,120 @@ import torch.optim as optim
 from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
 
-from datetime import datetime
-import itertools
+import os
 from tqdm import tqdm
 
 from networks import *
 
-# I recommend reading the script first (follow 1, 2, 3)
-def execute(hyperparameters:dict, train_dataloader:DataLoader, test_dataloader:DataLoader, 
-            model:CapsuleNetwork, optimizer:torch.optim.Adam, evaluator:Evaluator, epoch:int,
-            check_period:int):
-    global_step_counter = 0
-    tqdm_epoch_bar = tqdm(total=epoch, desc="Epoch Counter", unit='iter', leave=True)
-    for epoch_i in range(epoch):
-        tqdm_batch_bar = tqdm(total=len(train_dataloader), desc="Mini-Batch Counter", unit='iter', leave=False)
-        for batch_i, (data, label) in enumerate(train_dataloader):
-            # load the data
-            data, label = data.to(model.device), torch.nn.functional.one_hot(label, num_classes=10).to(model.device)
-            
-            # training:
-            # get the capsule predictions and reconstructions:
-            capsule_predictions, reconstructions = model(data, label)
-            # calculate lost and accuracy:
-            cost = model.cost(data, label, reconstructions, capsule_predictions)
-            # zero grad, backward and step
-            optimizer.zero_grad()
-            cost.backward()
-            optimizer.step()
-            
-             # loss/accuracy
-            if batch_i % check_period == 0:
-                model.eval()
-                with torch.no_grad():
-                    # 1) train dataset (we need to do the forward pass again due to masking mechanism):
-                    # data:
-                    # (just samples a batch from the dataset, I couldn't find a good way of doing that. so don't worry about the following 3 lines)
-                    indexes = torch.randint(0, len(train_dataloader.dataset), (hyperparameters['batch_size_test'],))
-                    data = torch.cat([train_dataloader.dataset[index][0].view(1, *train_dataloader.dataset[index][0].shape) for index in indexes], dim=0).to(model.device)
-                    label = torch.nn.functional.one_hot(torch.tensor([train_dataloader.dataset[index][1] for index in indexes]), num_classes=10).to(model.device)
-                    # running the model:
-                    capsule_predictions, reconstructions = model(data)
-                    # cost:
-                    cost = round(model.cost(data, label, reconstructions, capsule_predictions).item(), 2)
-                    writer.add_scalar("Train Cost", cost, global_step_counter)
-                    # accuracy: 
-                    accuracy = round(evaluator.accuracy(capsule_predictions.detach(), label.detach()), 2)
-                    writer.add_scalar("Train Accuracy", accuracy, global_step_counter)
-                    
-                    # 1) test dataset:
-                    # data:
-                    indexes = torch.randint(0, len(test_dataloader.dataset), (hyperparameters['batch_size_test'],))
-                    data = torch.cat([test_dataloader.dataset[index][0].view(1, *test_dataloader.dataset[index][0].shape) for index in indexes], dim=0).to(model.device)
-                    label = torch.nn.functional.one_hot(torch.tensor([test_dataloader.dataset[index][1] for index in indexes]), num_classes=10).to(model.device)
-                    # running the model:
-                    capsule_predictions, reconstructions = model(data)
-                    # cost:
-                    cost = round(model.cost(data, label, reconstructions, capsule_predictions).item(), 2)
-                    writer.add_scalar("Test Cost", cost, global_step_counter)
-                    # accuracy: 
-                    accuracy = round(evaluator.accuracy(capsule_predictions.detach(), label.detach()), 2)
-                    writer.add_scalar("Test Accuracy", accuracy, global_step_counter)
-                    
-                    global_step_counter += 1
-                model.train()
-            tqdm_batch_bar.update(1)
-        tqdm_epoch_bar.update(1)
+# 1) Configuration
+checkpoint_dir = "checkpoints/"
+try:
+    checkpoints = os.listdir(checkpoint_dir)
+except FileNotFoundError:
+    os.mkdir(checkpoint_dir)
+    checkpoints = os.listdir(checkpoint_dir)
+if len(checkpoints):
+    last_checkpoint_index = max([int(cp.split("_")[1][:-3]) for cp in checkpoints])
+else:
+    last_checkpoint_index = 0
+checkpoint_name = f"checkpoint_{last_checkpoint_index+1}.pt"
 
-# 1) set the configuration
-start_over = True # keep training from model_load, or start over. Saves no matter which.
-model_save_dir = "weight_saves/"
-model_save_name = "saved_model.pt"
-model_load_dir = "weight_saves/"
-model_load_name = "saved_model.pt"
+# 2) Hyper parameters and some other parameters
+hyper_parameters = {'train_batch_size':128,
+                    'validation_batch_size':128,
+                    }
 
-# 2) set the hyper-parameters and some other stuff
-# add any hyperparameter that you want to use in 'execute' function to this dictionary
-hyperparameters = {"batch_size_train":[128], # while training.
-                   "batch_size_test":[100]} # while testing.
-unique_writer_id = datetime.now().strftime('%Y_%m_%d_%H_%M_%S') # e.g: 2023_03_05_21_00_09, for tensorboard
-epoch = 100
-check_period = 10 # how often (mini-batch-wise) the training/test loss/accuracy will be calculated 
+parameters = {'start_over':True, # whether to start training from beginning or keep training from the last checkpoint
+              'epoch':20,
+              'check_period':1, # the check period. validation cost will be checked after every check_period epoch.
+              'continue_from':None} # which checkpoint to use. you can ignore if start_over=True. you can give 
+# continue_from=None and start_over=False to continue from the last checkpoint. 
 
-# 3) get the inputs for the 'execute' function above ready and pass them.
-# the following 3 lines just samples from the hyperparameter space a set of hyperparameters,
-# and hold it as a dictionary for the duration of the iteration.
-# it does so that you can add hyperparameters more easily.
-values_list = [hyperparameters[key] for key in hyperparameters.keys()]
-for values in itertools.product(*values_list):
-    hyperparameters = dict(zip(hyperparameters.keys(), values))
-    
-    # 3.1) set the data ready
-    train_dataset = torchvision.datasets.MNIST("datasets/", train=True, download=True,
-                                               transform=torchvision.transforms.Compose([torchvision.transforms.ToTensor(),
-                                                                                         torchvision.transforms.Normalize((0.1307,), (0.3081,))])
-                                               )
-    test_dataset = torchvision.datasets.MNIST("datasets/", train=False, download=True,
-                                              transform=torchvision.transforms.Compose([torchvision.transforms.ToTensor(),
+# 3) Data
+train_dataset = torchvision.datasets.MNIST("datasets/", train=True, download=True,
+                                            transform=torchvision.transforms.Compose([torchvision.transforms.ToTensor(),
                                                                                         torchvision.transforms.Normalize((0.1307,), (0.3081,))])
-                                              )
-    train_dataloader = DataLoader(train_dataset, hyperparameters['batch_size_train'], shuffle=True)
-    test_dataloader = DataLoader(test_dataset, hyperparameters['batch_size_test'], shuffle=True)
+                                            )
+validation_dataset = torchvision.datasets.MNIST("datasets/", train=False, download=True,
+                                                transform=torchvision.transforms.Compose([torchvision.transforms.ToTensor(),
+                                                                                          torchvision.transforms.Normalize((0.1307,), (0.3081,))])
+                                                )
+train_dataloader = DataLoader(train_dataset, hyper_parameters['train_batch_size'], shuffle=True)
+validation_dataloader = DataLoader(validation_dataset, hyper_parameters['validation_batch_size'], shuffle=True)
+
+# 4) Models
+model = CapsuleNetwork(device="cuda:0" if torch.cuda.is_available() else "cpu")
+#torch.compile(model)
+if parameters['start_over']:
+    pass
+else:
+    model.load_state_dict(torch.load(checkpoint_dir + f"checkpoint_{last_checkpoint_index}.pt"))
+optimizer = optim.Adam(model.parameters())
+evaluator = Evaluator()
+train_writer = SummaryWriter(f"tensorboard/{checkpoint_name[:-3]}/train/")
+validation_writer = SummaryWriter(f"tensorboard/{checkpoint_name[:-3]}/validation/")
+
+# 5) Run
+best_accuracy = -1
+global_step_counter = 0
+tqdm_epoch_bar = tqdm(total=parameters['epoch'], desc="Epoch Counter", unit='iter', leave=True)
+for epoch_i in range(parameters['epoch']):
     
-    # 3.2) set the model, optimizer, evaluator, tensorboard and stuff
-    model = CapsuleNetwork(device="cuda:0" if torch.cuda.is_available() else "cpu")
-    if start_over:
-        pass
-    else:
-        model.load_state_dict(torch.load(model_load_dir+model_load_name))
-    optimizer = optim.Adam(model.parameters())
-    evaluator = Evaluator()
-    # just some formatting so it look better:
-    name = values.__str__()[1:-1].replace(' ', '').replace(',', '_').replace("'", '').replace(':', '_')
-    writer = SummaryWriter(f"tensorboard/MNIST/{unique_writer_id}/{name}")
+    # train
+    tqdm_batch_bar = tqdm(total=len(train_dataloader), desc="Training Mini-Batch Counter", unit='iter', leave=False)
+    for data, label in train_dataloader:
+        # data
+        data, label = data.to(model.device), torch.nn.functional.one_hot(label, num_classes=10).to(model.device)
+        
+        # run
+        capsule_predictions, reconstructions = model(data, label)
+        cost = model.cost(data, label, reconstructions, capsule_predictions)
+        accuracy = evaluator.accuracy(capsule_predictions.detach(), label.detach())
+        one_digit_accuracy = evaluator.one_digit_accuracy(capsule_predictions.detach(), label.detach())
+        optimizer.zero_grad()
+        cost.backward()
+        optimizer.step()
+        
+        # write
+        train_writer.add_scalar("eval/cost", round(cost.item(), 5), global_step_counter)
+        train_writer.add_scalar("eval/accuracy", round(accuracy, 5), global_step_counter)
+        train_writer.add_scalar("eval/one_digit_accuracy", round(one_digit_accuracy, 5), global_step_counter)
+        global_step_counter += 1
+        tqdm_batch_bar.update(1)
+    
+    # validation
+    if epoch_i % parameters['check_period'] == 0:
+        model.eval()
+        with torch.no_grad():
+            total_cost = 0
+            total_accuracy = 0
+            total_one_digit_accuracy = 0
+            tqdm_batch_bar = tqdm(total=len(validation_dataloader), desc="Validation Mini-Batch Counter", unit='iter', leave=False)
+            for data, label in validation_dataloader:
+                # data
+                data, label = data.to(model.device), torch.nn.functional.one_hot(label, num_classes=10).to(model.device)
+                
+                # run
+                capsule_predictions, reconstructions = model(data)
+                cost = model.cost(data, label, reconstructions, capsule_predictions).item()
+                accuracy = evaluator.accuracy(capsule_predictions.detach(), label.detach())
+                one_digit_accuracy = evaluator.one_digit_accuracy(capsule_predictions.detach(), label.detach())
+                
+                total_cost += cost * (data.shape[0]/len(validation_dataloader.dataset))
+                total_accuracy += accuracy * (data.shape[0]/len(validation_dataloader.dataset))
+                total_one_digit_accuracy += one_digit_accuracy * (data.shape[0]/len(validation_dataloader.dataset))
 
-    # 3.3) run
-    execute(hyperparameters, train_dataloader, test_dataloader, model, optimizer, evaluator, epoch, check_period)
-
-torch.save(model.state_dict(), model_save_dir+model_save_name)
-
-
-# TODO: profile, memory and runtime.
-# TODO: plot capsule magnitudes
-# TODO: plot gradient magnitudes
-# TODO: capsule layer v2
+                tqdm_batch_bar.update(1)
+                
+            if total_accuracy > best_accuracy:
+                best_accuracy = total_accuracy
+                torch.save(model.state_dict(), checkpoint_dir+checkpoint_name)
+            
+        # write
+        validation_writer.add_scalar("eval/cost", round(total_cost, 5), global_step_counter)
+        validation_writer.add_scalar("eval/accuracy", round(total_accuracy, 5), global_step_counter)
+        validation_writer.add_scalar("eval/one_digit_accuracy", round(total_one_digit_accuracy, 5), global_step_counter)
+        model.train()
+        
+        
+    tqdm_epoch_bar.update(1)

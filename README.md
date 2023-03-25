@@ -5,22 +5,35 @@ dataset as in the paper.
 # Requirements
 torch, torchvision, tqdm
 
-# Usage
-Layers are implemented in **layers.py** and they are for general use. Networks (Capsule Network and the Reconstruction Network) are implemented in **networks.py** and they are specific to the dataset, and should be changed for different datasets. **networks.py** imports from **layers.py**.
+If you use PyTorch 2, and have a supported system, you can uncomment line 50 in main.py to increase speed. 
 
-**main.py** gives the output for the TensorBoard, and also saves the weights. Put any hyperparameters you want to use in the hyperparameter dictionary  as a list (for hyperparameter search), and use them accordingly in the _'execute'_ function. main.py imports from **networks.py**.
+# Usage
+Layers are implemented in **layers.py** and they are for general use. Networks (Capsule Network and the Reconstruction Network) are implemented in **networks.py** and they are specific to the data set, and should be changed for different data sets. **networks.py** imports from **layers.py**.
+
+**main.py** gives the output for the TensorBoard, and also saves the best weights. **profile.py** profiles the model and the script and saves the profile in **tensorboard/profiler**. It also extracts the graph and saves it in there as well. I couldn't open the profile for some reason. But here is a quick look at the graph:
+
+![Graph](results/graph.png)
 
 # Results
-Results can be found in the tensorboard file in tensorboard directory. Here is a quick look for:
+Results can be found in the tensorboard file in tensorboard directory. And saved weights can be found in checkpoints directory. Here is a quick look:
 
-![TensorBoardTrain](results/train.png)
-![TensorBoardTest](results/test.png)
+![TensorBoardTrain](results/results.png)
 
-The model was trained for 100 epochs for the batch size of 128. This result is obtained by checking in every 10 update with 100 random samples from the train and test data. 
+The model was trained for 20 epochs with the batch size of 128. Results for validation (test) was obtained on the whole validation (test) set at every epoch. The results for train was obtained by checking every train batch individually.
 
-I am planning to update this so that I check with a bigger batch whenever the results from 100 samples gives high enough accuracy. For example, when I get 99% test accuracy and 100% train accuracy with a batch size of 100, I will randomly choose another 900 samples to calculate the overall accuracy for 1000 samples. Because right now, the maximum train and test accuracies are 100%, although the model seems to converge around 97%.
+Accuracy is measured assuming we don't know if and how many digits there are in the given picture. So it applies a threshold of 0.5 to the norm of every digit capsule, and makes a prediction. For a prediction to be true, it should exactly match to the label, meaning we can't predict more or less digits, and we must predict the right digit. Highest accuracy achieved on the whole validation (test) set is 98.41%.
 
-It took about 3 hours to train the model on GeForce GTX 1650 Ti 4GB, Intel(R), Core(TM) i5-10300H CPU @ 2.50Ghz.
+One digit accuracy is more forgiving. Now, we assume that we know there is only one digit in any given picture. So now, we make our predictions by choosing the capsule with maximum norm. As a result, this accuracy is always greater than or equal to the usual accuracy. Highest one digit accuracy achieved on the whole validation (test) set is 99.32%.
+
+Both of these results were obtained by assuming:
+* We don't include the iteration process into the computational graph (if you want to include it to the computation graph, comment line 97 and uncomment line 98 in layers.py)
+* There is no bias (if you want to include bias, uncomment lines 51-53, 107, 124 in layers.py)
+* There is a ReLu layer at the end of second convolution. (if you don't want it, comment line 62 in networks.py)
+* There is weight sharing as mentioned in the paper (if you don't want it, comment line 45 and uncomment line 46 in networks.py)
+
+I tested these assumptions, but the result doesn't seem to change much. I also used 3 iterations.
+
+It took about 40 minutes to train the model on GeForce GTX 1650 Ti 4GB, Intel(R), Core(TM) i5-10300H CPU @ 2.50Ghz. So each epoch takes about 2 minutes.
 
 # Contact
 kaan.buyukdemirci@ug.bilkent.edu.tr, kaanbuyukdemirci2023@gmail.com

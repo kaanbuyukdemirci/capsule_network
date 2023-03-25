@@ -43,6 +43,7 @@ class CapsuleNetwork(nn.Module):
                                 device=device, dtype=dtype)
         self.c2c_3 = ConvToCapLayer(6*6, 32, 8, device, dtype)
         self.caps_4 = CapsuleLayer(10, 6*6, 32, 16, 8, 3, device, dtype)
+        # self.caps_4 = CapsuleLayer(10, 6*6*32, 1, 16, 8, 3, device, dtype)
         self.mask_5 = MaskLayer(10, threshold, flatten=True)
         self.rec_net_6 = ReconstructionNetwork(device, dtype)
         self.cost_7 = CapsuleNetworkCostLayer(alpha, lamb, m_minus, m_plus, device, dtype)
@@ -55,8 +56,10 @@ class CapsuleNetwork(nn.Module):
         # y.shape = (n or DNE, 10) or None
         
         x = self.conv_1(x)
+        x = torch.relu(x)
         # x shape: (n or DNE, c2, h2, w2)
         x = self.conv_2(x)
+        x = torch.relu(x)
         # x shape: (n or DNE, c3, h3, w3)
         x = self.c2c_3(x)
         # x shape: (n, 10, 6*6*32, 8, 1)
@@ -79,6 +82,9 @@ class Evaluator(object):
         pass
 
     def accuracy(self, capsule_network_outputs, labels):
+        """ round the capsule sizes to 0 or 1. For a sample to be considered correct, 
+        it should rounded prediction should match to the labels.
+        """
         # capsule_network_outputs shape: (n, n_capsules, n_capsule_features)
         # labels shape: (n or DNE, n_classes)
         # n_classes = n_capsules
@@ -98,4 +104,26 @@ class Evaluator(object):
         accuracy = 1 - torch.sum(accuracy)/accuracy.shape[0]
         # accuracy shape: (1,)
         
-        return round(accuracy.item(), 2)
+        return accuracy.item()
+    
+    def one_digit_accuracy(self, capsule_network_outputs, labels):
+        """ instead of rounding every capsule, it is now assumed that there is only 1 digit, 
+        so we return the onehot representation of the capsule with highest norm. 
+        """
+        # capsule_network_outputs shape: (n, n_capsules, n_capsule_features)
+        # labels shape: (n or DNE, n_classes)
+        # n_classes = n_capsules
+        
+        labels = labels.view(-1, labels.shape[-1])
+        # labels shape: (n, n_classes)
+        
+        capsule_network_outputs = torch.norm(capsule_network_outputs, dim=2)
+        # capsule_network_outputs shape: (n, n_classes)
+        
+        capsule_network_outputs = torch.argmax(capsule_network_outputs, dim=1)
+        # capsule_network_outputs shape: (n)
+        
+        labels = torch.argmax(labels, dim=1)
+        # labels shape: (n)
+        
+        return torch.sum(labels==capsule_network_outputs).item()/labels.shape[0]

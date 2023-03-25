@@ -26,7 +26,7 @@ class CapsuleLayer(nn.Module):
         n_in_capsules = 6*6*32
         n_in_features = 8
         
-    Also, for no weight sharing, you can set the parameters as:
+    For no weight sharing, you can set the parameters as:
         n_in_capsules_unique = 6*6*32
         n_in_capsules_sharing_per_unique = 1
     
@@ -48,9 +48,14 @@ class CapsuleLayer(nn.Module):
         self.weights = nn.Parameter(torch.randn(size=(1, n_out_capsules, n_in_capsules_unique, 1, n_out_features, n_in_features), dtype=self.dtype) * 
                                     torch.sqrt(torch.tensor(2/(self.n_in_capsules*n_in_features + n_out_capsules*n_out_features))),
                                     requires_grad=True) # N(0, 2/(fan_in+fan_out))
+        # self.biases = nn.Parameter(torch.randn(size=(1, n_out_capsules, 1, n_out_features, 1), dtype=self.dtype) * 
+        #                             torch.sqrt(torch.tensor(2/(n_out_capsules*n_out_features))),
+        #                             requires_grad=True)
         # u.shape = (batch_size, 1             , n_in_capsules_unique, n_in_capsules_sharing_per_unique, n_in_features , 1            )
         # W.shape = (1         , n_out_capsules, n_in_capsules_unique, 1                               , n_out_features, n_in_features)
+        # b.shape = (1,        , n_out_capsules, 1                                                     , n_out_features, 1)
         # see that capsules in 3rd dimension share weights, while capsules in 2nd dimension have unique weights.
+        # batch_size, n_out_capsules, 1, n_out_features, 1
         
         self.to(device)
     
@@ -90,11 +95,16 @@ class CapsuleLayer(nn.Module):
         # c.shape = (batch_size, n_out_capsules, n_in_capsules, 1, 1)
         
         v = x.detach()
+        # v = x
         # this will be needed later in b updates. We are detaching so while we are calculating c iteratively, 
         # we will not be expanding the computational graph.
         
         for _ in range(self.n_iterations):
             v = torch.sum(c*u_hat, dim=2, keepdim=True)
+            # v = s
+            # s.shape = (batch_size, n_out_capsules, 1, n_out_features, 1)
+            
+            # v = v + self.biases.detach()
             # v = s
             # s.shape = (batch_size, n_out_capsules, 1, n_out_features, 1)
             
@@ -108,6 +118,10 @@ class CapsuleLayer(nn.Module):
             # c.shape = (batch_size, n_out_capsules, n_in_capsules, 1, 1)
         
         x = torch.sum(c*x, dim=2, keepdim=True)
+        # x = s
+        # s.shape = (batch_size, n_out_capsules, 1, n_out_features, 1)
+        
+        # x = x + self.biases
         # x = s
         # s.shape = (batch_size, n_out_capsules, 1, n_out_features, 1)
         
